@@ -44,7 +44,7 @@ Optional fields are `run_date` (`YYYY-MM-DD`) and `force_retrain` (boolean). `qu
 
 1. Put this `backend/` directory in a Git repository and push it to GitHub. Add the six CSVs under `backend/data/` only if the repository is private and you are permitted to store them there. Keep `.env` and model cache files out of Git.
 2. In Koyeb, create an App and choose **Deploy from GitHub**. Select the repository and branch.
-3. Set the service **Work directory** to `backend` and choose **Dockerfile** as the builder (Dockerfile path `Dockerfile`). If the Koyeb form expects a repository-relative path, use `backend/Dockerfile` and leave work directory unset instead.
+3. Choose **Dockerfile** as the builder. This GitHub repository is rooted at the backend files, so leave **Work directory** unset and set the Dockerfile path to `Dockerfile`.
 4. Set the service port to `8000` (HTTP). Koyeb injects `PORT`; the Docker command listens on it.
 5. Add `CORS_ORIGINS` as a comma-separated list of your deployed frontend origins, for example `https://your-site.example`. For local frontend work use `http://localhost:3000,http://localhost:5173`. Avoid `*` when credentials are in use; this API does not enable credentialed CORS.
 6. Deploy, then open `https://<your-service-domain>/health`. It should say `status: ok` and show all six files as `true`. Visit `/docs` to try the endpoint.
