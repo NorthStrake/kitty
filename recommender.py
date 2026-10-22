@@ -291,8 +291,10 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
     route = df5[(df5['origin_port_id'] == origin_port_id)
                 & (df5['destination_port_id'] == destination_port_id)]
     if route.empty:
-        raise ValueError('No route %s -> %s in route_distances.csv'
-#                          % (origin_port, destination_port))
+        raise ValueError(
+            'No route %s -> %s in route_distances.csv'
+            % (origin_port, destination_port)
+        )
     distance = route['distance_nm'].values[0]
     route_id = route['route_id'].values[0]
     indian_ports_id = df2.loc[df2['country'] == 'India', 'port_id'].values
