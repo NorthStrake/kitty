@@ -13,7 +13,7 @@ The Docker image includes these CSVs under `data/`:
 - `route_distances.csv`
 - `cargo_orders.csv`
 
-Keep the column names and units expected by the original model. This project repository is private because it contains the data. For larger or more sensitive datasets, move the CSVs to controlled object storage and load them at runtime; set `DATA_DIR` to the mounted/downloaded directory. Cloud Run's writable container filesystem is temporary, so the model cache is not durable across instance replacement. Models train on the first recommendation request and the cache is reused only while that instance remains alive.
+Keep the column names and units expected by the original model. This GitHub repository is private because it contains the data. For larger or more sensitive datasets, store them separately and set `DATA_DIR` to the mounted or downloaded directory. Render's container filesystem is temporary by default, so a model cache written at runtime is not durable across instance replacement. Models train on the first recommendation request and the cache is reused only while an instance remains alive.
 
 ## Run locally
 
@@ -40,21 +40,19 @@ Open `http://localhost:8000/docs`. `GET /health` reports which CSVs are present.
 
 Optional fields are `run_date` (`YYYY-MM-DD`) and `force_retrain` (boolean). `quantity` is passed through as-is; ensure its unit matches the model's DWT and training-data assumptions. A successful response has `count` and a `recommendations` array.
 
-## Deploy to Google Cloud Run
+## Deploy to Render
 
-This GitHub repository is rooted at the backend files, with `Dockerfile` at the root.
+This GitHub repository is rooted at the backend files; the `Dockerfile` is at the repository root.
 
-1. In Google Cloud Console, select or create a project and enable billing. Open **Cloud Run** and choose **Deploy from a repository** / continuous deployment.
-2. Connect GitHub through Cloud Build or Developer Connect. Grant access to the private `NorthStrake/kitty` repository, then select branch `main`.
-3. For build configuration, choose **Dockerfile** and set the Dockerfile location and build context to the repository root (`Dockerfile` and `.`). Do not set a subdirectory/work directory.
-4. Set the service name (for example, `vessel-charter-api`) and choose a region near the expected users. Set **Container port** to `8080`; the Dockerfile listens on Cloud Run's injected `PORT` value.
-5. Set **Maximum concurrent requests per instance** to `1` initially because the first recommendation request trains the models and can use substantial CPU. Use at least **2 GiB memory** and **2 CPUs** to start. Set the request timeout to **900 seconds** to allow initial training; Cloud Run's default request timeout is 300 seconds. Adjust these after observing real build and request performance.
-6. Under ingress/authentication, allow unauthenticated invocations if the website's visitors should call the API directly. If authentication is required, the frontend needs a secure server-side integration; do not put service account credentials in browser code.
-7. Create the service and follow the build/deployment logs. Open the generated `run.app` URL plus `/health`; it should report `status: ok` and all six files as `true`. Open `/docs` to try the API.
-8. Add `CORS_ORIGINS` in the service's variables, using the deployed frontend origin (for example `https://your-site.example`). For local frontend work, use `http://localhost:3000,http://localhost:5173`. CORS is not authentication; avoid leaving `*` in place for a public production API.
-9. In the Bolt/Lovable frontend, use the Cloud Run service URL as the API base and POST JSON to `/api/recommendations`. After pushing backend changes to `main`, Cloud Build can automatically build and deploy a new revision when continuous deployment is enabled.
+1. In the Render Dashboard, choose **New > Web Service**, connect GitHub, and select the private repository `NorthStrake/kitty` on branch `main`.
+2. Set **Root Directory** to blank (repository root) and **Runtime** to **Docker**. Keep the Dockerfile path as `./Dockerfile` and leave **Docker Command** blank so Render uses the command in the Dockerfile.
+3. Choose a service name and region. Select a plan; the free service spins down after inactivity, so its next request can have a cold start.
+4. In **Advanced**, set the health check path to `/health`. Leave `PORT` unset; Render provides it, and the Dockerfile binds Uvicorn to `0.0.0.0:$PORT` (default 10000).
+5. Add `CORS_ORIGINS` as a comma-separated list of the frontend origins that will call this API. For local frontend work use `http://localhost:3000,http://localhost:5173`; add the deployed frontend URL when it exists. The code currently defaults to `*` if this variable is omitted.
+6. Click **Create Web Service** and follow the build/deploy logs. When it is live, open the Render URL plus `/health`; it should say `status: ok` and show all six files as `true`. Visit `/docs` to try the endpoint.
+7. In Bolt/Lovable frontend code, set the API base URL to the Render service URL and POST JSON to `/api/recommendations`. Figma is a design tool; its exported frontend still needs to be hosted somewhere. Render can automatically redeploy this API after pushes to the connected branch.
 
-Google Cloud's repository deployment guide: https://cloud.google.com/run/docs/continuous-deployment
+Render's [web service deployment guide](https://render.com/docs/web-services) and [Docker guide](https://render.com/docs/docker) describe these settings.
 
 ## Model behavior to review before launch
 
