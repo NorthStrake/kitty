@@ -434,11 +434,16 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
         idle_days = (cand['order_time'] - arrival_date).dt.total_seconds() / 86400
         add_cost = idle_days * IDLE_RATE + dist * FUEL_PER_NM
         i = add_cost.idxmin()
-        return cand.at[i, 'order_id'], idle_days[i], add_cost[i]
+        return (cand.at[i, 'order_id'], idle_days[i], add_cost[i],
+                cand.at[i, 'cargo_type'], cand.at[i, 'quantity_mt'],
+                cand.at[i, 'order_time'])
 
     n = len(df)
     total = np.full((n, 4), np.inf)
     order_ids = np.full((n, 4), None, dtype=object)
+    order_cargo_types = np.full((n, 4), None, dtype=object)
+    order_quantities_mt = np.full((n, 4), np.nan)
+    order_times = np.full((n, 4), None, dtype=object)
     idle_days_arr = np.full((n, 4), np.nan)
 
     for m, h in enumerate(HORIZONS):
@@ -452,6 +457,9 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
                 continue
             order_ids[pos, m] = res[0]
             idle_days_arr[pos, m] = res[1]
+            order_cargo_types[pos, m] = res[3]
+            order_quantities_mt[pos, m] = res[4]
+            order_times[pos, m] = res[5]
             total[pos, m] = fc + res[2]
 
     # ---- stage 6: best month per row, ranked by total cost -------------------
@@ -469,6 +477,9 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
         'month_to_charter': np.array(month_labels)[best],
         'total_cost': total[rows, best],
         'order_id': order_ids[rows, best],
+        'next_order_cargo_type': order_cargo_types[rows, best],
+        'next_order_quantity_mt': order_quantities_mt[rows, best],
+        'next_order_scheduled_time': order_times[rows, best],
         'final_destination_port': df['destination_port'].values,
         'freight_cost': freight_matrix[rows, best],
         'idle_cost': idle_days_arr[rows, best] * IDLE_RATE,

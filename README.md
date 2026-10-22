@@ -38,7 +38,7 @@ Open `http://localhost:8000/docs`. `GET /health` reports which CSVs are present.
 }
 ```
 
-Optional fields are `run_date` (`YYYY-MM-DD`) and `force_retrain` (boolean). `quantity` is passed through as-is; ensure its unit matches the model's DWT and training-data assumptions. A successful response has `count` and a `recommendations` array.
+Optional fields are `run_date` (`YYYY-MM-DD`) and `force_retrain` (boolean). `quantity` is passed through as-is; ensure its unit matches the model's DWT and training-data assumptions. A successful response has `count` and a `recommendations` array. Each recommendation includes vessel ID/type, suggested charter month, final destination port, total estimated cost and its freight/idle/distance breakdown, plus the selected next order ID, cargo type, quantity in metric tonnes, and scheduled order time.
 
 ## Deploy to Render
 
