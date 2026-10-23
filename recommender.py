@@ -471,6 +471,13 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
 
     vessel_type = (df1.drop_duplicates('vessel_id')
                       .set_index('vessel_id')['vessel_type'])
+    port_name_by_id = (df2.assign(
+        port_id=df2['port_id'].astype(str).str.strip())
+        .drop_duplicates('port_id')
+        .set_index('port_id')['port_name'])
+    destination_port_ids = df['destination_port'].astype(str).str.strip()
+    destination_port_names = destination_port_ids.map(port_name_by_id).fillna(
+        destination_port_ids)
     freight_matrix = np.column_stack([df['predicted_f_cost_%d' % h] for h in HORIZONS])
 
     out = pd.DataFrame({
@@ -482,7 +489,7 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
         'next_order_cargo_type': order_cargo_types[rows, best],
         'next_order_quantity_mt': order_quantities_mt[rows, best],
         'next_order_scheduled_time': order_times[rows, best],
-        'final_destination_port': df['destination_port'].values,
+        'final_destination_port': destination_port_names.values,
         'freight_cost': freight_matrix[rows, best],
         'idle_cost': idle_days_arr[rows, best] * IDLE_RATE,
         'distance_cost': df['distance'].values * FUEL_PER_NM,
