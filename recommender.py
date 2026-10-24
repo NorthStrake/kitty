@@ -92,6 +92,7 @@ WINDOWS = [3, 6, 12]
 IDLE_RATE = 1000       # USD per idle day
 FUEL_PER_NM = 50       # USD per nautical mile
 RANDOM_STATE = 42
+CACHE_VERSION = 'history-v1'
 
 
 def resolve_data_dir():
@@ -228,7 +229,13 @@ def train_models(freight_rates, market):
         frame = frame.dropna(subset=[tc, tdc]).copy()
         models[h] = _make_model(cat_cols, num_cols).fit(frame[features], frame[tc])
 
-    return {'models': models, 'features': features, 'base_date': base_date}
+    # Save the latest real monthly feature state so inference starts from the
+    # observed route/vessel history instead of synthetic market values/lags.
+    last_date = monthly['date'].max()
+    latest = monthly.loc[monthly['date'] == last_date,
+                         ['date'] + base_features].copy()
+    return {'models': models, 'features': features, 'base_date': base_date,
+            'last_date': last_date, 'latest': latest}
 
 
 def _file_signature(paths):
@@ -240,7 +247,7 @@ def _file_signature(paths):
 
 
 def load_or_train(freight_rates, market, rate_paths, force_retrain=False):
-    sig = _file_signature(rate_paths)
+    sig = {'cache_version': CACHE_VERSION, **_file_signature(rate_paths)}
     if not force_retrain and os.path.exists(MODEL_CACHE):
         try:
             bundle = joblib.load(MODEL_CACHE)
@@ -273,6 +280,8 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
                            force_retrain)
     final_models, FEATURES, BASE_DATE = (bundle['models'], bundle['features'],
                                          bundle['base_date'])
+    LAST_DATE = pd.Timestamp(bundle['last_date'])
+    latest = bundle['latest']
 
     # ---- customer details -> ids, distance, port limits ---------------------
     def port_row(name):
@@ -299,12 +308,10 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
     route_id = route['route_id'].values[0]
     indian_ports_id = df2.loc[df2['country'] == 'India', 'port_id'].values
 
-    expected_arrival = datetime.strptime(expected_arrival, '%Y-%m-%d').date()
-    if run_date is None:
-        current_month = datetime.now().date()
-    else:
-        current_month = datetime.strptime(run_date, '%Y-%m-%d').date()
-    print('Run date used as "today": %s' % current_month)
+    deadline_ts = pd.Timestamp(datetime.strptime(expected_arrival, '%Y-%m-%d').date())
+    # Charter-month candidates follow the latest month in freight history,
+    # matching sample.py. run_date is retained in the function signature for
+    # API compatibility, but the forecast anchor is the dataset's last month.
 
     # ---- stage 1: constrain vessels ----------------------------------------
     const_df = df1[
@@ -316,59 +323,48 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
     if const_df.empty:
         raise ValueError('No vessel satisfies the port / quantity constraints')
 
-    # ---- stage 2: model input (market values are synthetic) -----------------
-    rng = np.random.default_rng(42)
+    # ---- stage 2: infer from actual observed market/rate history -----------
+    calendar_cols = ('target_month_sin', 'target_month_cos', 'target_time_index')
+    state_cols = [c for c in FEATURES
+                  if c not in calendar_cols and c not in GROUP_COLS]
+    same_route = latest[
+        (latest['route_id'] == str(route_id))
+        & (latest['origin_port_id'] == str(origin_port_id))
+        & (latest['destination_port_id'] == str(destination_port_id))]
+
+    def state_for(vessel_type):
+        rows = same_route[same_route['vessel_type'] == vessel_type]
+        if not rows.empty:
+            return rows[state_cols].iloc[0]
+        if not same_route.empty:
+            return same_route[state_cols].mean()
+        return latest[state_cols].mean()
+
     X0 = const_df.copy()
-    X0['route_id'] = route_id
-    X0['origin_port_id'] = origin_port_id
-    X0['destination_port_id'] = destination_port_id
+    X0['vessel_type'] = X0['vessel_type'].astype(str)
+    state_df = pd.DataFrame(
+        {vt: state_for(vt) for vt in X0['vessel_type'].unique()}).T
+    state_df.index.name = 'vessel_type'
+    state_df = state_df.reset_index()
+    X0 = (X0.drop(columns=[c for c in state_cols if c in X0.columns])
+          .merge(state_df, on='vessel_type', how='left'))
+    X0['route_id'] = str(route_id)
+    X0['origin_port_id'] = str(origin_port_id)
+    X0['destination_port_id'] = str(destination_port_id)
     X0['distance_nm'] = distance
-    X0['current_month'] = pd.Timestamp(current_month)
     X0['type_of_cargo'] = type_of_cargo
     X0['quantity_kg'] = quantity
     X0['quantity_mt'] = quantity / 1000
-    X0['expected_arrival_time'] = pd.Timestamp(expected_arrival)
 
-    # NOTE: the order of these draws matters (seeded RNG) - do not reorder.
-    synthetic_market = {
-        'fuel_price_usd_per_tonne': rng.uniform(450, 750),
-        'relevant_commodity_price_usd_per_tonne': rng.uniform(70, 180),
-        'origin_congestion_index': rng.uniform(0.1, 0.8),
-        'destination_congestion_index': rng.uniform(0.1, 0.8),
-        'shipping_market_index_x': rng.uniform(500, 3000),
-        'seasonal_demand_index': rng.uniform(0.5, 1.5),
-        'coal_price_usd_per_tonne': rng.uniform(70, 180),
-        'iron_ore_price_usd_per_tonne': rng.uniform(70, 150),
-        'wheat_price_usd_per_tonne': rng.uniform(150, 350),
-        'bunker_fuel_price_usd_per_tonne': rng.uniform(400, 750),
-        'brent_crude_price_usd_per_barrel': rng.uniform(50, 110),
-        'usd_inr_exchange_rate': rng.uniform(80, 95),
-        'shipping_market_index_y': rng.uniform(500, 3000),
-        'global_bulk_cargo_demand_index': rng.uniform(0.5, 1.5),
-        'port_congestion_index': rng.uniform(0.1, 0.8),
-        'global_shipping_capacity_index': rng.uniform(0.5, 1.5),
-    }
-    for col, value in synthetic_market.items():
-        X0[col] = value
-
-    synthetic_rate_reference = 15.0  # illustrative USD/tonne placeholder
-    for lag in LAGS:
-        X0['rate_lag_%d' % lag] = synthetic_rate_reference * rng.uniform(0.85, 1.15)
-    for w in WINDOWS:
-        X0['rate_rolling_mean_%d' % w] = synthetic_rate_reference * rng.uniform(0.90, 1.10)
-
-    calendar_cols = ('target_month_sin', 'target_month_cos', 'target_time_index')
     missing = [c for c in FEATURES if c not in X0.columns and c not in calendar_cols]
     if missing:
         raise ValueError('The trained model expects additional columns: '
                          + ', '.join(missing))
 
-    # ---- stage 3: predict the next four months -------------------------------
-    first_forecast_month = (pd.Timestamp(current_month).to_period('M').to_timestamp()
-                            + pd.DateOffset(months=1))
+    # ---- stage 3: forecast the four months after latest freight history -----
     month_labels = []
     for h in HORIZONS:
-        fm = first_forecast_month + pd.DateOffset(months=h - 1)
+        fm = LAST_DATE + pd.DateOffset(months=h)
         month_labels.append('%d_%02d' % (fm.year, fm.month))
 
         Xh = X0.copy()
@@ -389,7 +385,7 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
         const_df[['vessel_id', 'speed_knots']].drop_duplicates('vessel_id'),
         on='vessel_id', how='left')
 
-    # ---- stage 4: every vessel x every Indian port, with arrival dates -------
+    # ---- stage 4: evaluate each vessel and Indian follow-on port ------------
     freight['current_port'] = destination_port_id   # vessel is first delivered here
     freight['initial_distance'] = distance
 
@@ -403,17 +399,13 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
     df = df.rename(columns={'distance_nm': 'distance_to_destination'})
     df = df.drop(columns=['origin_port_id', 'destination_port_id'], errors='ignore')
 
-    start_date = pd.Timestamp(current_month)
-    initial_duration = np.ceil(df['initial_distance'] / (24 * df['speed_knots']))
-    baseline_arrival = start_date + pd.to_timedelta(initial_duration, unit='D')
-    travel_days = np.ceil(df['distance_to_destination'] / (24 * df['speed_knots']))
-    base_arrival = (baseline_arrival
-                    + pd.to_timedelta(travel_days, unit='D')).dt.round('D')
-
-    arrival_cols = ['approximate_arrival_date_m%d' % i for i in range(1, 5)]
-    df[arrival_cols[0]] = base_arrival
-    for i in range(1, 4):
-        df[arrival_cols[i]] = df[arrival_cols[i - 1]] + pd.DateOffset(months=1)
+    leg1_days = np.ceil(distance / (24 * df['speed_knots']))
+    leg2_days = np.ceil(df['distance_to_destination'] / (24 * df['speed_knots']))
+    month_starts = [LAST_DATE + pd.DateOffset(months=h) for h in HORIZONS]
+    cargo_arrival = [ms + pd.to_timedelta(leg1_days, unit='D')
+                     for ms in month_starts]
+    arrival = [(ca + pd.to_timedelta(leg2_days, unit='D')).dt.round('D')
+               for ca in cargo_arrival]
 
     df['distance'] = df['distance_to_destination']
     df = df.drop(columns=['distance_to_destination'])
@@ -449,10 +441,11 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
     idle_days_arr = np.full((n, 4), np.nan)
 
     for m, h in enumerate(HORIZONS):
-        for pos, (port, arr, dist, fc) in enumerate(zip(
-                df['destination_port'], df[arrival_cols[m]], df['distance'],
-                df['predicted_f_cost_%d' % h])):
-            if pd.isna(arr) or pd.isna(dist) or pd.isna(fc):
+        for pos, (port, arr, dist, fc, cargo_date) in enumerate(zip(
+                df['destination_port'], arrival[m], df['distance'],
+                df['predicted_f_cost_%d' % h], cargo_arrival[m])):
+            if (pd.isna(arr) or pd.isna(dist) or pd.isna(fc)
+                    or pd.isna(cargo_date) or cargo_date > deadline_ts):
                 continue
             res = best_order(port, arr, dist)
             if res is None:
@@ -464,7 +457,10 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
             order_times[pos, m] = res[5]
             total[pos, m] = fc + res[2]
 
-    # ---- stage 6: best month per row, ranked by total cost -------------------
+    # ---- stage 6: best feasible charter month per vessel/port ----------------
+    if not np.isfinite(total).any():
+        raise ValueError('No follow-on cargo order is available after arrival '
+                         'within the requested delivery deadline.')
     best = total.argmin(axis=1)
     rows = np.arange(n)
     keep = np.isfinite(total[rows, best])
@@ -479,6 +475,8 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
     destination_port_names = destination_port_ids.map(port_name_by_id).fillna(
         destination_port_ids)
     freight_matrix = np.column_stack([df['predicted_f_cost_%d' % h] for h in HORIZONS])
+    cargo_arrival_matrix = np.column_stack([ca.values for ca in cargo_arrival])
+    voyage_start_array = np.array([ms.to_datetime64() for ms in month_starts])
 
     out = pd.DataFrame({
         'vessel_id': df['vessel_id'].values,
@@ -493,7 +491,16 @@ def recommend(origin_port, destination_port, quantity, type_of_cargo,
         'freight_cost': freight_matrix[rows, best],
         'idle_cost': idle_days_arr[rows, best] * IDLE_RATE,
         'distance_cost': df['distance'].values * FUEL_PER_NM,
+        'origin_dest_distance_nm': distance,
+        'speed_knots': df['speed_knots'].values,
+        'travel_days': leg1_days.values,
+        'voyage_start_date': voyage_start_array[best],
+        'arrival_date': cargo_arrival_matrix[rows, best],
     })[keep]
+
+    out['travel_days'] = out['travel_days'].astype(int)
+    out['voyage_start_date'] = pd.to_datetime(out['voyage_start_date']).dt.date
+    out['arrival_date'] = pd.to_datetime(out['arrival_date']).dt.date
 
     return out.sort_values('total_cost', ascending=True).reset_index(drop=True)
 

@@ -31,7 +31,7 @@ class RecommendationRequest(BaseModel):
     quantity: float = Field(gt=0, description="Cargo quantity in the same units as the model's vessel DWT data")
     type_of_cargo: str = Field(min_length=1, examples=["coal"])
     expected_arrival: date
-    run_date: date | None = Field(default=None, description="Optional as-of date for reproducible forecasts")
+    run_date: date | None = Field(default=None, description="Deprecated; forecast months are anchored to the latest month in freight-rate data")
     force_retrain: bool = False
 
 
